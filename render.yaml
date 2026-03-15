@@ -1,0 +1,9 @@
+# Render Blueprint: backend only (frontend deploys on Vercel).
+# Add env vars (ANTHROPIC_API_KEY, GEMINI_API_KEY, CORS_ORIGINS) in Render dashboard.
+services:
+  - type: web
+    runtime: python
+    name: travel-agent-api
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
