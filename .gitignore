@@ -1,0 +1,38 @@
+# Environment and secrets (never commit API keys)
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Google / GCP credentials
+google-service.json
+**/google-service.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+.eggs/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.npm
+*.tsbuildinfo
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+.cache/
