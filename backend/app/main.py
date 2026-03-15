@@ -37,11 +37,15 @@ app = FastAPI(title="Travel Agent API", version="1.0", lifespan=lifespan)
 
 # CORS - allow localhost and production frontend (set CORS_ORIGINS in production)
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").strip().split(",")
+_origins_list = [o.strip() for o in _cors_origins if o.strip()]
+# Allow any *.vercel.app so production and preview deploys work without exact URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins if o.strip()],
-    allow_methods=["*"],
+    allow_origins=_origins_list,
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 @app.get("/")
