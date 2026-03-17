@@ -23,3 +23,4 @@ class ChatMessage(BaseModel):
 
 class TravelChatRequest(BaseModel):
     messages: List[ChatMessage]
+    session_id: Optional[str] = None  # For short/long-term memory

@@ -70,7 +70,7 @@ async def travel_chat(request: TravelChatRequest):
         )
     try:
         messages = [m.model_dump() for m in request.messages]
-        response = chat_agent.chat(messages)
+        response = chat_agent.chat(messages, session_id=request.session_id)
         return {"message": response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

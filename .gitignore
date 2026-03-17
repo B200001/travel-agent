@@ -36,3 +36,6 @@ Thumbs.db
 # Logs and temp
 *.log
 .cache/
+
+# Travel agent long-term memory (session preferences)
+backend/data/
