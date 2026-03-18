@@ -31,6 +31,8 @@ async def lifespan(app: FastAPI):
     except ValueError:
         chat_agent = None  # fallback if something else goes wrong
     yield
+    if chat_agent is not None:
+        chat_agent.close()
 
 
 app = FastAPI(title="Travel Agent API", version="1.0", lifespan=lifespan)
