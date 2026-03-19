@@ -115,23 +115,27 @@ class TravelChatAgent:
         return "search" if state.get("needs_search") else "custom"
 
     def _node_configure_search(self, state: TravelChatState) -> TravelChatState:
-        config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])
-        return {**state, "config": config}
+        return {**state, "tool_mode": "search"}
 
     def _node_configure_custom_tools(self, state: TravelChatState) -> TravelChatState:
-        session_id = state.get("session_id", "default")
-        save_fn, get_fn = build_session_callables(session_id, self._execute_tool)
-        config = types.GenerateContentConfig(
-            tools=[save_fn, get_fn],
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False),
-        )
-        return {**state, "config": config}
+        return {**state, "tool_mode": "custom"}
 
     def _node_generate(self, state: TravelChatState) -> TravelChatState:
+        tool_mode = state.get("tool_mode", "custom")
+        if tool_mode == "search":
+            config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])
+        else:
+            session_id = state.get("session_id", "default")
+            save_fn, get_fn = build_session_callables(session_id, self._execute_tool)
+            config = types.GenerateContentConfig(
+                tools=[save_fn, get_fn],
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False),
+            )
+
         response = self.client.models.generate_content(
             model=self.model,
             contents=state["prompt"],
-            config=state["config"],
+            config=config,
         )
         result = (getattr(response, "text", None) or "").strip()
         return {**state, "result": result}
