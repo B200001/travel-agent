@@ -1,5 +1,5 @@
 """Travel chat package."""
 
-from .agent import TravelChatAgent
+from .autonomous_agent import TravelChatAgent
 
 __all__ = ["TravelChatAgent"]

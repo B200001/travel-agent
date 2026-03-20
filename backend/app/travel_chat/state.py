@@ -1,6 +1,6 @@
 """Typed state used by the LangGraph workflow."""
 
-from typing import Annotated, Dict, List, Literal, Optional, TypedDict
+from typing import Annotated, Dict, List, Optional, TypedDict
 
 
 def append_messages(
@@ -21,6 +21,17 @@ class TravelChatState(TypedDict, total=False):
     user_content: str
     short_term: List[Dict[str, str]]
     prompt: str
-    needs_search: bool
-    tool_mode: Literal["search", "custom"]
+    cache_key: str
+    cache_hit: bool
+    cached_result: str
+    task_graph: List[Dict[str, object]]
+    task_outputs: Dict[str, str]
+    execution_trace: List[str]
+    all_tasks_completed: bool
+    planning_summary: str
+    blocked: bool
+    blocked_reason: str
+    quick_reply: bool
+    emergency_query: bool
+    fast_search_query: bool
     result: str

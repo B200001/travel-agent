@@ -2,7 +2,10 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pathlib import Path
+import asyncio
+import json
 
 from dotenv import load_dotenv
 import os
@@ -72,10 +75,42 @@ async def travel_chat(request: TravelChatRequest):
         )
     try:
         messages = [m.model_dump() for m in request.messages]
-        response = chat_agent.chat(messages, session_id=request.session_id)
-        return {"message": response}
+        payload = chat_agent.chat_payload(messages, session_id=request.session_id)
+        return payload
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/travel-chat/stream")
+async def travel_chat_stream(request: TravelChatRequest):
+    if chat_agent is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Travel chat requires GEMINI_API_KEY or GOOGLE_API_KEY in .env"
+        )
+
+    async def event_generator():
+        try:
+            messages = [m.model_dump() for m in request.messages]
+            payload = chat_agent.chat_payload(messages, session_id=request.session_id)
+            response = payload["message"]
+            words = response.split()
+            for i, word in enumerate(words):
+                chunk = (word + " ") if i < len(words) - 1 else word
+                yield f"data: {json.dumps({'delta': chunk})}\n\n"
+                await asyncio.sleep(0.02)
+            yield f"data: {json.dumps({'done': True, 'message': response, 'structured': payload.get('structured')})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/api/health")

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { planTrip, sendTravelChat } from "@/lib/api";
-import type { TripRequest, TravelPlanResult, ChatMessage } from "@/types";
+import { planTrip, streamTravelChat } from "@/lib/api";
+import type { TripRequest, TravelPlanResult, ChatMessage, StructuredBlock } from "@/types";
 
 const PREFERENCE_OPTIONS = {
   type: [
@@ -20,6 +20,246 @@ const PREFERENCE_OPTIONS = {
 };
 
 type Tab = "plan" | "chat";
+const WELCOME_MESSAGE =
+  "Hi! I'm your travel assistant. Tell me where you'd like to go, your budget, dates, or what kind of trip you're looking for - I'll help you plan it!";
+
+type MessageBlock = StructuredBlock;
+type UIChatMessage = ChatMessage & { blocks?: StructuredBlock[] };
+
+function formatInline(text: string) {
+  const tokens = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g).filter(Boolean);
+  return tokens.map((token, idx) => {
+    if (token.startsWith("**") && token.endsWith("**")) {
+      return (
+        <strong key={idx} className="font-semibold text-slate-900">
+          {token.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (token.startsWith("*") && token.endsWith("*")) {
+      return (
+        <em key={idx} className="italic">
+          {token.slice(1, -1)}
+        </em>
+      );
+    }
+    return <span key={idx}>{token}</span>;
+  });
+}
+
+function parseMessageBlocks(content: string): MessageBlock[] {
+  const cleanLine = (line: string) =>
+    line
+      .replace(/\*{3,}/g, "**")
+      .replace(/^\s*#+\s*#+\s*$/g, "")
+      .replace(/^\s*#+\s*$/g, "")
+      .replace(/^\s*-\s*Late\s*$/i, "")
+      .replace(/^\s*Late\s*$/i, "")
+      .replace(/\*\*(Morning|Afternoon|Evening|Lunch|Dinner|Full Day|Late Morning|Late Afternoon)\s*$/i, "$1")
+      .replace(/\*\*(Morning|Afternoon|Evening|Lunch|Dinner|Full Day|Late Morning|Late Afternoon)\s*:\s*$/i, "$1:")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
+  const normalized = content
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s+(?=#{1,6}\s)/g, "\n\n")
+    .replace(
+      /\s+(?=(Friday,\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}\s+[A-Za-z ]+Opportunities))/gi,
+      "\n\n"
+    )
+    .replace(
+      /\s+(?=([A-Z][A-Za-z '&/-]{2,80},\s*(USA|Mexico|Canada|Australia|New Zealand|Iceland|Norway|Japan|South Africa)[^:]{0,80}:))/g,
+      "\n\n"
+    )
+    .replace(
+      /\.\s+(?=([A-Z][A-Za-z'&(). -]{2,80}:\s))/g,
+      ".\n"
+    )
+    .replace(
+      /\s+(?=([A-Za-z][A-Za-z'&()./ -]{2,80}\s\/\s[A-Za-z][A-Za-z'&()./ -]{2,80}:))/g,
+      "\n"
+    )
+    .replace(
+      /([A-Za-z][A-Za-z0-9 '&().-]{4,120},\s*[A-Za-z() .-]{2,80},\s*Australia)\s+(?=Operating Status for Today:)/g,
+      "\n\n$1\n"
+    )
+    .replace(
+      /\s+(?=(Wildlife Parks\s*&\s*Sanctuaries|National Parks\s*&\s*Gardens|Uncertainty\s*&\s*Recommendation)\b)/gi,
+      "\n\n"
+    )
+    .replace(/\s+(?=(Operating Status for Today:|Viewing:))/gi, "\n")
+    .replace(/\s+(?=(Your\s+\w+\s+Plan\b))/gi, "\n\n")
+    .replace(/\s+(?=Day\s+\d+\b[^:]*:)/gi, "\n\n")
+    .replace(/\s+(?=Budget Breakdown\b)/gi, "\n\n")
+    .replace(/\s+(?=(Morning|Afternoon|Evening|Lunch|Dinner|Full Day|Note)\s*:)/gi, "\n")
+    .replace(/\s+(?=(With your\s+₹|How does this sound\b|Let me know if))/gi, "\n\n")
+    .replace(/\*\s*(Morning|Afternoon|Evening|Lunch|Dinner|Full Day)\s*:/gi, "\n- $1:")
+    .replace(
+      /\s+(?=(Flights|Accommodation|Food\s*&\s*Drink|Local Transportation|Activities\s*&\s*Sightseeing|Miscellaneous|Total Estimated Budget)\b)/gi,
+      "\n"
+    )
+    .replace(/\n{3,}/g, "\n\n");
+
+  const lines = normalized.split("\n").map((line) => cleanLine(line));
+  const blocks: MessageBlock[] = [];
+  let paragraphLines: string[] = [];
+  let listItems: string[] = [];
+
+  const flushParagraph = () => {
+    if (paragraphLines.length > 0) {
+      blocks.push({ type: "paragraph", lines: paragraphLines });
+      paragraphLines = [];
+    }
+  };
+
+  const flushList = () => {
+    if (listItems.length > 0) {
+      blocks.push({ type: "list", items: listItems });
+      listItems = [];
+    }
+  };
+
+  for (const line of lines) {
+    const trimmed = cleanLine(line);
+
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const listMatch = trimmed.match(/^[-*]\s+(.*)$/);
+    if (listMatch) {
+      flushParagraph();
+      listItems.push(listMatch[1]);
+      continue;
+    }
+
+    const timeLabelMatch = trimmed.match(
+      /^(Morning|Afternoon|Evening|Lunch|Dinner|Full Day|Note)\s*:\s*(.*)$/i
+    );
+    if (timeLabelMatch) {
+      flushParagraph();
+      listItems.push(
+        `${timeLabelMatch[1]}: ${timeLabelMatch[2]}`.replace(/\s+/g, " ").trim()
+      );
+      continue;
+    }
+
+    const markdownHeading = trimmed.match(/^#{1,6}\s+(.+?)\**$/);
+    if (markdownHeading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: markdownHeading[1].trim() });
+      continue;
+    }
+
+    const dayHeading = trimmed.match(/^(?:#{1,6}\s*)?(Day\s+\d+[^:]*):?\s*(.*)$/i);
+    if (dayHeading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: dayHeading[1].trim() });
+      if (dayHeading[2]) {
+        blocks.push({ type: "paragraph", lines: [dayHeading[2].trim()] });
+      }
+      continue;
+    }
+
+    const sectionHeading = trimmed.match(/^([^:*#]{2,80}):$/);
+    if (sectionHeading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: sectionHeading[1].trim() });
+      continue;
+    }
+
+    const placeHeading = trimmed.match(
+      /^([A-Za-z][A-Za-z0-9 '&()./-]{4,140},\s*[A-Za-z() .'-]{2,80}(?:,\s*(USA|Mexico|Canada|Australia|New Zealand|Iceland|Norway|Japan|South Africa))?)$/
+    );
+    if (placeHeading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: placeHeading[1].trim() });
+      continue;
+    }
+
+    const regionHeading = trimmed.match(
+      /^([A-Za-z][A-Za-z '&/-]{2,80},\s*(USA|Mexico|Canada|Australia|New Zealand|Iceland|Norway|Japan|South Africa)[^:]{0,80}):$/
+    );
+    if (regionHeading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", text: regionHeading[1].trim() });
+      continue;
+    }
+
+    const factMatch = trimmed.match(/^([A-Za-z][^:*#]{2,80}):\s+(.+)$/);
+    if (factMatch && !/^Day\s+\d+/i.test(factMatch[1])) {
+      flushParagraph();
+      flushList();
+      blocks.push({
+        type: "fact",
+        label: factMatch[1].trim(),
+        value: factMatch[2].trim(),
+      });
+      continue;
+    }
+
+    flushList();
+    paragraphLines.push(trimmed);
+  }
+
+  flushParagraph();
+  flushList();
+  return blocks;
+}
+
+function AssistantMessage({ content, blocks }: { content: string; blocks?: StructuredBlock[] }) {
+  const safeBlocks = blocks?.length ? blocks : parseMessageBlocks(content);
+
+  return (
+    <div className="space-y-3 text-[15px] leading-7 text-slate-700">
+      {safeBlocks.map((block, idx) => {
+        if (block.type === "heading") {
+          return (
+            <h4 key={idx} className="text-base font-semibold text-slate-900 pt-1">
+              {formatInline(block.text)}
+            </h4>
+          );
+        }
+
+        if (block.type === "fact") {
+          return (
+            <div
+              key={idx}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 leading-6"
+            >
+              <span className="font-medium text-slate-900">{formatInline(block.label)}:</span>{" "}
+              <span className="text-slate-700">{formatInline(block.value)}</span>
+            </div>
+          );
+        }
+
+        if (block.type === "list") {
+          return (
+            <ul key={idx} className="list-disc pl-5 space-y-2 marker:text-sky-500">
+              {block.items.map((item, i) => (
+                <li key={i}>{formatInline(item)}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        return (
+          <p key={idx}>
+            {formatInline(block.lines.join(" ").replace(/\s+/g, " "))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("chat");
@@ -37,15 +277,20 @@ export default function Home() {
   const [result, setResult] = useState<TravelPlanResult | null>(null);
 
   // Chat state
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+  const [chatMessages, setChatMessages] = useState<UIChatMessage[]>([
     {
       role: "assistant",
-      content:
-        "Hi! I'm your travel assistant. Tell me where you'd like to go, your budget, dates, or what kind of trip you're looking for - I'll help you plan it!",
+      content: WELCOME_MESSAGE,
     },
   ]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [chatSessionId] = useState(
+    () =>
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `session-${Date.now()}`)
+  );
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   useEffect(scrollToBottom, [chatMessages]);
@@ -54,26 +299,66 @@ export default function Home() {
     const msg = chatInput.trim();
     if (!msg || chatLoading) return;
     setChatInput("");
-    setChatMessages((prev) => [...prev, { role: "user", content: msg }]);
+    const requestMessages: ChatMessage[] = [
+      ...chatMessages.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: msg },
+    ];
+    const assistantIndex = requestMessages.length;
+    setChatMessages((prev) => [
+      ...prev,
+      { role: "user", content: msg },
+      { role: "assistant", content: "" },
+    ]);
     setChatLoading(true);
     try {
-      const nextMessages: ChatMessage[] = [
-        ...chatMessages,
-        { role: "user", content: msg },
-      ];
-      const res = await sendTravelChat(nextMessages);
-      setChatMessages((prev) => [...prev, { role: "assistant", content: res.message }]);
+      await streamTravelChat(
+        requestMessages,
+        (delta) => {
+          setChatMessages((prev) => {
+            const updated = [...prev];
+            const target = updated[assistantIndex];
+            if (target && target.role === "assistant") {
+              updated[assistantIndex] = {
+                ...target,
+                content: `${target.content}${delta}`,
+              };
+            }
+            return updated;
+          });
+        },
+        (finalPayload) => {
+          setChatMessages((prev) => {
+            const updated = [...prev];
+            const target = updated[assistantIndex];
+            if (target && target.role === "assistant") {
+              updated[assistantIndex] = {
+                ...target,
+                content: finalPayload.message,
+                blocks: finalPayload.structured?.blocks,
+              };
+            }
+            return updated;
+          });
+        },
+        chatSessionId
+      );
     } catch (err) {
       setChatMessages((prev) => [
-        ...prev,
+        ...prev.slice(0, assistantIndex),
         {
           role: "assistant",
-          content: err instanceof Error ? err.message : "Something went wrong. Please try again.",
+          content:
+            err instanceof Error ? err.message : "Something went wrong. Please try again.",
         },
       ]);
     } finally {
       setChatLoading(false);
     }
+  };
+
+  const handleResetChat = () => {
+    setChatMessages([{ role: "assistant", content: WELCOME_MESSAGE }]);
+    setChatInput("");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -93,92 +378,152 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen py-8 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto">
-      {/* Header */}
-      <header className="text-center mb-10">
-        <h1 className="text-4xl font-bold text-sky-800 mb-2">
-          🌟 Travel Agent
-        </h1>
-        <p className="text-slate-600 text-lg">
-          Flights, hotels, restaurants, sightseeing - we&apos;ll plan it all!
-        </p>
-      </header>
-
-      {/* Tabs */}
-      <div className="flex gap-2 mb-6 border-b border-slate-200">
-        <button
-          type="button"
-          onClick={() => setActiveTab("chat")}
-          className={`px-4 py-2 font-medium rounded-t-lg transition-colors ${
-            activeTab === "chat"
-              ? "bg-sky-100 text-sky-700 border-b-2 border-sky-600 -mb-px"
-              : "text-slate-600 hover:bg-slate-100"
-          }`}
-        >
-          💬 Chat
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("plan")}
-          className={`px-4 py-2 font-medium rounded-t-lg transition-colors ${
-            activeTab === "plan"
-              ? "bg-sky-100 text-sky-700 border-b-2 border-sky-600 -mb-px"
-              : "text-slate-600 hover:bg-slate-100"
-          }`}
-        >
-          📋 Plan Trip (Form)
-        </button>
-      </div>
-
-      {/* Chat tab */}
-      {activeTab === "chat" && (
-        <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden flex flex-col h-[600px]">
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {chatMessages.map((m, i) => (
-              <div
-                key={i}
-                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-2 ${
-                    m.role === "user"
-                      ? "bg-sky-600 text-white"
-                      : "bg-slate-100 text-slate-800"
-                  }`}
-                >
-                  <p className="whitespace-pre-wrap text-sm">{m.content}</p>
-                </div>
-              </div>
-            ))}
-            {chatLoading && (
-              <div className="flex justify-start">
-                <div className="bg-slate-100 rounded-2xl px-4 py-2 text-slate-500 text-sm">
-                  Typing...
-                </div>
-              </div>
-            )}
-            <div ref={chatEndRef} />
+    <main className="min-h-screen py-5 px-4 sm:px-6">
+      <div className="max-w-7xl mx-auto grid gap-5 lg:grid-cols-[280px_1fr]">
+        <aside className="rounded-3xl border border-slate-200/80 bg-white/80 backdrop-blur-xl shadow-sm p-4 sm:p-5 h-fit lg:sticky lg:top-5">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="h-10 w-10 rounded-2xl bg-sky-600 text-white grid place-content-center text-lg">
+              ✈️
+            </div>
+            <div>
+              <h1 className="font-semibold text-slate-900">Travel Copilot</h1>
+              <p className="text-xs text-slate-500">Industry-style AI planner</p>
+            </div>
           </div>
-          <div className="p-4 border-t border-slate-200 flex gap-2">
-            <input
-              type="text"
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleChatSend()}
-              placeholder="Ask about destinations, budgets, itineraries..."
-              className="flex-1 px-4 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
-            />
+
+          <div className="space-y-2 mb-6">
             <button
               type="button"
-              onClick={handleChatSend}
-              disabled={chatLoading}
-              className="px-5 py-2 bg-sky-600 hover:bg-sky-700 disabled:bg-slate-400 text-white font-medium rounded-xl"
+              onClick={() => setActiveTab("chat")}
+              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm font-medium transition ${
+                activeTab === "chat"
+                  ? "bg-sky-600 text-white shadow-sm"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+              }`}
             >
-              Send
+              💬 AI Chat
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("plan")}
+              className={`w-full text-left px-3 py-2.5 rounded-xl text-sm font-medium transition ${
+                activeTab === "plan"
+                  ? "bg-sky-600 text-white shadow-sm"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+              }`}
+            >
+              📋 Structured Planner
             </button>
           </div>
-        </div>
-      )}
+
+        </aside>
+
+        <section className="rounded-3xl border border-slate-200/80 bg-white/80 backdrop-blur-xl shadow-sm overflow-hidden">
+          <div className="px-5 sm:px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+            <div>
+              <p className="text-sm text-slate-500">
+                {activeTab === "chat" ? "Conversational Mode" : "Form Mode"}
+              </p>
+              <h2 className="text-xl font-semibold text-slate-900">
+                {activeTab === "chat"
+                  ? "Travel AI Assistant"
+                  : "Detailed Trip Planner"}
+              </h2>
+            </div>
+            {activeTab === "chat" && (
+              <button
+                type="button"
+                onClick={handleResetChat}
+                className="text-sm px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100"
+              >
+                New Chat
+              </button>
+            )}
+          </div>
+
+          {/* Chat tab */}
+          {activeTab === "chat" && (
+            <div className="flex flex-col h-[78vh] min-h-[620px]">
+              <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-5">
+                {chatMessages.map((m, i) => (
+                  <div
+                    key={i}
+                    className={`flex items-start gap-3 ${
+                      m.role === "user" ? "justify-end" : "justify-start"
+                    }`}
+                  >
+                    {m.role === "assistant" && (
+                      <div className="h-8 w-8 rounded-full bg-sky-100 text-sky-700 grid place-content-center text-xs font-semibold mt-1">
+                        AI
+                      </div>
+                    )}
+                    <div
+                      className={`max-w-[88%] sm:max-w-[80%] rounded-2xl px-4 py-3 ${
+                        m.role === "user"
+                          ? "bg-slate-900 text-white"
+                          : "bg-white text-slate-800 border border-slate-200 shadow-sm"
+                      }`}
+                    >
+                      {m.role === "assistant" ? (
+                        <AssistantMessage content={m.content} blocks={m.blocks} />
+                      ) : (
+                        <p className="whitespace-pre-wrap text-sm leading-6">{m.content}</p>
+                      )}
+                    </div>
+                    {m.role === "user" && (
+                      <div className="h-8 w-8 rounded-full bg-slate-900/90 text-white grid place-content-center text-xs font-semibold mt-1">
+                        You
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="flex items-start gap-3">
+                    <div className="h-8 w-8 rounded-full bg-sky-100 text-sky-700 grid place-content-center text-xs font-semibold mt-1">
+                      AI
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm">
+                      <div className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full bg-slate-300 animate-pulse" />
+                        <span className="h-2 w-2 rounded-full bg-slate-300 animate-pulse [animation-delay:120ms]" />
+                        <span className="h-2 w-2 rounded-full bg-slate-300 animate-pulse [animation-delay:240ms]" />
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              <div className="px-4 sm:px-6 py-4 border-t border-slate-200 bg-white/70">
+                <div className="rounded-2xl border border-slate-300 bg-white p-2.5 flex items-end gap-2">
+                  <textarea
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        void handleChatSend();
+                      }
+                    }}
+                    placeholder="Ask for itinerary, budget split, flights + stay suggestions..."
+                    rows={1}
+                    className="flex-1 resize-none outline-none text-sm leading-6 px-2 py-1 max-h-36"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleChatSend}
+                    disabled={chatLoading || !chatInput.trim()}
+                    className="h-10 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 disabled:text-slate-500 text-white text-sm font-medium transition"
+                  >
+                    Send
+                  </button>
+                </div>
+                <p className="text-xs text-slate-500 mt-2 px-1">
+                  Press Enter to send, Shift+Enter for new line.
+                </p>
+              </div>
+            </div>
+          )}
 
       {/* Form tab */}
       {activeTab === "plan" && (
@@ -386,6 +731,8 @@ export default function Home() {
       {result && <ResultsView data={result} />}
       </>
       )}
+        </section>
+      </div>
     </main>
   );
 }

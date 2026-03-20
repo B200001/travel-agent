@@ -92,6 +92,32 @@ See the dashboard docs for each platform for exact steps. The repo includes a `r
 | `CORS_ORIGINS` | Backend | Comma-separated allowed origins (e.g. your Vercel URL). |
 | `NEXT_PUBLIC_API_URL` | Frontend | Backend base URL (e.g. `https://your-api.onrender.com`). |
 
+## Travel Chat Graph
+
+```mermaid
+flowchart TD
+    A[prepare] --> B[input_guardrails]
+
+    B -->|blocked| I[postprocess]
+    B -->|quick| I
+    B -->|ok| C[cache_lookup]
+
+    C -->|hit| I
+    C -->|emergency| D[emergency_fastpath]
+    C -->|fast_search| E[search_fastpath]
+    C -->|planner| F[planner]
+
+    D --> I
+    E --> I
+
+    F --> G[task_executor]
+    G -->|ready| H[synthesizer]
+    G -->|failed| I
+    H --> I
+
+    I --> J((END))
+```
+
 ## License
 
 MIT

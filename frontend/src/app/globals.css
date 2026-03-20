@@ -9,8 +9,13 @@
 
 body {
   color: rgb(var(--foreground-rgb));
-  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 50%, #fef3c7 100%);
+  background:
+    radial-gradient(circle at 10% 10%, #e0f2fe 0%, transparent 36%),
+    radial-gradient(circle at 90% 80%, #dbeafe 0%, transparent 30%),
+    linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 @layer utilities {
