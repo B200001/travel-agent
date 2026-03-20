@@ -159,7 +159,8 @@ class TravelChatAgent:
     def _node_prepare(self, state: TravelChatState) -> TravelChatState:
         messages = state.get("messages", [])
         session_id = state.get("session_id") or "default"
-        user_content = run_guardrails(self._guard, (messages[-1]["content"] if messages else ""), stage="input")
+        latest_user = self._latest_user_message(messages)
+        user_content = run_guardrails(self._guard, latest_user, stage="input")
         short_term = messages[-SHORT_TERM_MEMORY_LIMIT:] if len(messages) > SHORT_TERM_MEMORY_LIMIT else messages
         conversation = "\n\n".join(f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}" for m in short_term)
         today = date.today().strftime("%A, %B %d, %Y")
@@ -178,6 +179,15 @@ class TravelChatAgent:
             "fast_search_query": False,
             "all_tasks_completed": False,
         }
+
+    def _latest_user_message(self, messages: List[Dict[str, str]]) -> str:
+        """Return most recent user message, even if list ends with assistant text."""
+        for message in reversed(messages or []):
+            if str(message.get("role", "")).lower() == "user":
+                return str(message.get("content", "")).strip()
+        if messages:
+            return str(messages[-1].get("content", "")).strip()
+        return ""
 
     def _node_input_guardrails(self, state: TravelChatState) -> TravelChatState:
         query = state.get("user_content", "").lower().strip()
@@ -399,7 +409,8 @@ class TravelChatAgent:
                 try:
                     snapshot = self._graph.get_state(cfg)
                     if (getattr(snapshot, "values", {}) or {}).get("messages"):
-                        incoming = messages[-1:] if messages else []
+                        latest_user_content = self._latest_user_message(messages)
+                        incoming = [{"role": "user", "content": latest_user_content}] if latest_user_content else (messages[-1:] if messages else [])
                 except Exception:
                     pass
             state_in = {"messages": incoming, "session_id": sid}

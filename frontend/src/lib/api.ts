@@ -6,7 +6,21 @@ import type {
   StructuredChatPayload,
 } from "@/types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+function resolveApiUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (configured) return configured;
+  if (typeof window !== "undefined") {
+    const { origin, hostname } = window.location;
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return "http://localhost:8000";
+    }
+    // In deployed environments, default to same-origin if env is missing.
+    return origin;
+  }
+  return "http://localhost:8000";
+}
+
+const API_URL = resolveApiUrl();
 
 export async function sendTravelChat(messages: ChatMessage[]): Promise<TravelChatResponse> {
   const res = await fetch(`${API_URL}/api/travel-chat`, {
