@@ -262,6 +262,11 @@ function AssistantMessage({ content, blocks }: { content: string; blocks?: Struc
 }
 
 export default function Home() {
+  const createSessionId = () =>
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `session-${Date.now()}`;
+
   const [activeTab, setActiveTab] = useState<Tab>("chat");
   const [formData, setFormData] = useState<TripRequest>({
     origin: "Delhi",
@@ -285,12 +290,7 @@ export default function Home() {
   ]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
-  const [chatSessionId] = useState(
-    () =>
-      (typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `session-${Date.now()}`)
-  );
+  const [chatSessionId, setChatSessionId] = useState(() => createSessionId());
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   useEffect(scrollToBottom, [chatMessages]);
@@ -359,6 +359,7 @@ export default function Home() {
   const handleResetChat = () => {
     setChatMessages([{ role: "assistant", content: WELCOME_MESSAGE }]);
     setChatInput("");
+    setChatSessionId(createSessionId());
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

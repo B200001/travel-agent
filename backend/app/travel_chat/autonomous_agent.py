@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 TRAVEL_KEYWORDS = ("travel", "trip", "flight", "hotel", "itinerary", "visa", "budget", "destination", "weather")
 BLOCKED_INPUT = ("make a bomb", "how to hack", "steal", "kill", "suicide")
+NON_CACHEABLE_RESPONSES = {
+    "I can only provide safe travel planning help.",
+}
 PROMPT_BYPASS = ("ignore all previous instructions", "reveal system prompt", "developer instructions")
 EMERGENCY_KEYWORDS = (
     "emergency",
@@ -198,7 +201,7 @@ class TravelChatAgent:
             reply = "Hey! I am here and ready to help. Tell me your travel plan and I can help with flights, itinerary, budget, hotels, visa, or weather."
             self._log("guardrails quick_reply | query=%s", query)
             return {**state, "cache_hit": True, "result": reply, "quick_reply": True}
-        elif any(x in query for x in BLOCKED_INPUT):
+        elif self._contains_blocked_intent(query):
             reason = "I can only help with safe travel planning."
         elif any(x in query for x in PROMPT_BYPASS):
             reason = "I can help with travel planning, but cannot follow instruction-bypass requests."
@@ -342,7 +345,13 @@ class TravelChatAgent:
     def _node_postprocess(self, state: TravelChatState) -> TravelChatState:
         result = run_guardrails(self._guard, state.get("result", ""), stage="output")
         result = self._apply_output_guardrails(result, state.get("user_content", ""))
-        if result and state.get("all_tasks_completed") and not state.get("cache_hit") and not state.get("blocked"):
+        if (
+            result
+            and result not in NON_CACHEABLE_RESPONSES
+            and state.get("all_tasks_completed")
+            and not state.get("cache_hit")
+            and not state.get("blocked")
+        ):
             self._cache.put(state.get("session_id", "default"), state.get("user_content", ""), result)
             self._log("cache store")
         if self._langfuse:
@@ -584,12 +593,27 @@ class TravelChatAgent:
         if not out:
             return "I couldn't generate a response. Please rephrase your travel question."
         lowered = out.lower()
-        if any(b in lowered for b in BLOCKED_INPUT):
+        if self._contains_blocked_intent(lowered):
             return "I can only provide safe travel planning help."
         out = re.sub(r"\b(sk|api)[-_]?[a-z0-9]{10,}\b", "[redacted]", out, flags=re.IGNORECASE)
         if any(k in user.lower() for k in TRAVEL_KEYWORDS) and not any(k in lowered for k in TRAVEL_KEYWORDS):
             out += "\n\nI can continue with travel-specific details like itinerary, flights, hotels, or budget."
         return out
+
+    def _contains_blocked_intent(self, text: str) -> bool:
+        """Match harmful intent safely without false positives like 'skill'."""
+        normalized = (text or "").lower()
+        for blocked in BLOCKED_INPUT:
+            token = blocked.strip().lower()
+            if not token:
+                continue
+            if " " in token:
+                if token in normalized:
+                    return True
+                continue
+            if re.search(rf"\b{re.escape(token)}\b", normalized):
+                return True
+        return False
 
     def _configure_console_logging(self) -> None:
         if not self._verbose_logs:
