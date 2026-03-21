@@ -1,6 +1,4 @@
 import type {
-  TripRequest,
-  TravelPlanResult,
   ChatMessage,
   TravelChatResponse,
   StructuredChatPayload,
@@ -104,19 +102,4 @@ export async function streamTravelChat(
       }
     }
   }
-}
-
-export async function planTrip(data: TripRequest): Promise<TravelPlanResult> {
-  const res = await fetch(`${API_URL}/api/plan-trip`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || res.statusText || "API error");
-  }
-
-  return res.json();
 }

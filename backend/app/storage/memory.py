@@ -3,7 +3,7 @@
 import json
 from typing import Dict
 
-from .constants import LONG_TERM_STORAGE_PATH
+from app.services.constants import LONG_TERM_STORAGE_PATH
 
 
 def ensure_storage_dir() -> None:

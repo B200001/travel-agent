@@ -5,26 +5,33 @@ import logging
 import os
 import re
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from langgraph.graph import END, StateGraph
 
-from .cache import TravelQueryCache
-from .checkpointing import SqliteCheckpointerManager
-from .constants import (
+from app.storage.checkpointing import SqliteCheckpointerManager
+from app.storage.memory import initialize_long_term_memory_store
+from app.storage.query_cache import TravelQueryCache
+from app.services.constants import (
     CACHE_DB_PATH,
     LANGGRAPH_CHECKPOINT_DB_PATH,
     SHORT_TERM_MEMORY_LIMIT,
     SYSTEM_PROMPT,
     TASK_GRAPH_MERMAID_PATH,
 )
-from .integrations import run_guardrails, run_judge, setup_guard, setup_langfuse
-from .state import TravelChatState
-from .storage import initialize_long_term_memory_store
-from .tooling import build_session_callables, execute_tool
+from app.services.integrations import (
+    langfuse_session_scope,
+    normalize_langfuse_session_id,
+    run_guardrails,
+    run_judge,
+    setup_guard,
+    setup_langfuse,
+)
+from app.services.state import TravelChatState
+from app.services.tooling import build_session_callables, execute_tool
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -95,7 +102,7 @@ class TravelChatAgent:
         self.model = "gemini-1.5-flash" if use_vertex else "gemini-2.5-flash"
         self._verbose_logs = os.getenv("TRAVEL_CHAT_VERBOSE_LOGS", "true").lower() in ("true", "1", "yes")
         self._force_fast_search = os.getenv("TRAVEL_CHAT_FORCE_FAST_SEARCH", "false").lower() in ("true", "1", "yes")
-        self._fast_model = os.getenv("TRAVEL_CHAT_FAST_MODEL", "gemini-1.5-flash")
+        self._fast_model = os.getenv("TRAVEL_CHAT_FAST_MODEL", self.model)
         self._configure_console_logging()
 
         self._guard = setup_guard()
@@ -326,19 +333,7 @@ class TravelChatAgent:
         return {**state, "task_outputs": outputs, "execution_trace": trace, "all_tasks_completed": all_done, "result": interim}
 
     def _node_synthesizer(self, state: TravelChatState) -> TravelChatState:
-        payload = {
-            "user_goal": state.get("user_content", ""),
-            "planning_summary": state.get("planning_summary", ""),
-            "task_graph": state.get("task_graph", []),
-            "task_outputs": state.get("task_outputs", {}),
-            "execution_trace": state.get("execution_trace", []),
-        }
-        prompt = (
-            "Generate the final travel answer using completed tasks.\n"
-            "Use task outputs as source-of-truth. Mention uncertainty if any task has ERROR.\n"
-            "If itinerary requested, format with day headings and concise bullets.\n\n"
-            f"{json.dumps(payload, indent=2)}"
-        )
+        prompt = self._build_synthesizer_prompt(state)
         result = (self.client.models.generate_content(model=self.model, contents=prompt).text or "").strip()
         return {**state, "result": result}
 
@@ -356,23 +351,32 @@ class TravelChatAgent:
             self._log("cache store")
         if self._langfuse:
             try:
-                with self._langfuse.start_as_current_observation(
-                    name="travel_chat",
-                    as_type="span",
-                    input={"user_message": state.get("user_content", ""), "session_id": state.get("session_id", "default")},
-                    output=result,
-                ) as span:
-                    trace_id = getattr(span, "trace_id", None) or getattr(span, "id", None)
-                    if trace_id:
-                        run_judge(
-                            client=self.client,
-                            model=self.model,
-                            langfuse_client=self._langfuse,
-                            user_msg=state.get("user_content", ""),
-                            assistant_msg=result,
-                            trace_id=trace_id,
-                            generation_id=None,
-                        )
+                session_id = normalize_langfuse_session_id(state.get("session_id", "default"))
+                with langfuse_session_scope(session_id):
+                    observation_kwargs = {
+                        "name": "travel_chat",
+                        "as_type": "span",
+                        "input": {"user_message": state.get("user_content", ""), "session_id": session_id},
+                        "output": result,
+                    }
+                    try:
+                        observation_ctx = self._langfuse.start_as_current_observation(session_id=session_id, **observation_kwargs)
+                    except TypeError:
+                        # Backward compatibility for SDKs that do not accept session_id in this method.
+                        observation_ctx = self._langfuse.start_as_current_observation(**observation_kwargs)
+                    with observation_ctx as span:
+                        trace_id = getattr(span, "trace_id", None) or getattr(span, "id", None)
+                        if trace_id:
+                            run_judge(
+                                client=self.client,
+                                model=self.model,
+                                langfuse_client=self._langfuse,
+                                user_msg=state.get("user_content", ""),
+                                assistant_msg=result,
+                                trace_id=trace_id,
+                                generation_id=None,
+                                conversation=state.get("short_term", []),
+                            )
                 self._langfuse.flush()
             except Exception as e:
                 logger.warning("Langfuse trace/judge failed: %s", e)
@@ -438,6 +442,170 @@ class TravelChatAgent:
                 "blocks": self._to_structured_blocks(message),
             },
         }
+
+    def chat_payload_stream(self, messages: List[Dict[str, str]], session_id: Optional[str] = None) -> Iterator[Dict[str, Any]]:
+        """Yield SSE-friendly delta events while generating a response."""
+        try:
+            sid = session_id or "default"
+            state: TravelChatState = {"messages": messages, "session_id": sid}
+            state = self._node_prepare(state)
+            state = self._node_input_guardrails(state)
+
+            if state.get("blocked") or state.get("quick_reply"):
+                final = self._node_postprocess(state).get("result", "")
+                if final:
+                    yield {"delta": final}
+                yield {"done": True, "message": final, "structured": {"blocks": self._to_structured_blocks(final)}}
+                return
+
+            state = self._node_cache_lookup(state)
+            if state.get("cache_hit"):
+                final = self._node_postprocess(state).get("result", "")
+                if final:
+                    yield {"delta": final}
+                yield {"done": True, "message": final, "structured": {"blocks": self._to_structured_blocks(final)}}
+                return
+
+            if state.get("emergency_query"):
+                prompt = (
+                    "User needs urgent emergency assistance. Provide concise, actionable steps.\n"
+                    "Use web search to fetch the most relevant official contact numbers/websites for the user's location.\n"
+                    "Keep response short and high-signal with this structure:\n"
+                    "1) Immediate actions now\n"
+                    "2) Emergency contacts (with location)\n"
+                    "3) Embassy/consulate help (if passport/documents issue)\n"
+                    "4) What to prepare next\n"
+                    "If nationality is unknown, avoid assumptions and ask one follow-up line at the end.\n\n"
+                    f"User query: {state.get('user_content', '')}"
+                )
+                final = self._stream_direct_answer(
+                    model=self._fast_model,
+                    prompt=prompt,
+                    state=state,
+                    config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]),
+                )
+                for event in final:
+                    yield event
+                return
+
+            if state.get("fast_search_query"):
+                prompt = (
+                    "Answer the user query quickly using web search.\n"
+                    "Return concise, practical information only.\n"
+                    "Rules:\n"
+                    "- Keep under 8 bullets or short paragraphs.\n"
+                    "- Prefer official/recent info.\n"
+                    "- If location/date missing, ask one short follow-up at end.\n\n"
+                    f"User query: {state.get('user_content', '')}"
+                )
+                final = self._stream_direct_answer(
+                    model=self._fast_model,
+                    prompt=prompt,
+                    state=state,
+                    config=types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())]),
+                )
+                for event in final:
+                    yield event
+                return
+
+            state = self._node_planner(state)
+            state = self._node_task_executor(state)
+            if not state.get("all_tasks_completed"):
+                final = self._node_postprocess(state).get("result", "")
+                if final:
+                    yield {"delta": final}
+                yield {"done": True, "message": final, "structured": {"blocks": self._to_structured_blocks(final)}}
+                return
+
+            synth_prompt = self._build_synthesizer_prompt(state)
+            chunks: List[str] = []
+            for delta in self._iter_model_text(
+                model=self.model,
+                contents=synth_prompt,
+                config=None,
+            ):
+                chunks.append(delta)
+                yield {"delta": delta}
+
+            streamed_message = "".join(chunks).strip()
+            final_state = self._node_postprocess({**state, "result": streamed_message})
+            final_message = final_state.get("result", "")
+            if final_message.startswith(streamed_message):
+                tail = final_message[len(streamed_message) :]
+                if tail:
+                    yield {"delta": tail}
+            yield {
+                "done": True,
+                "message": final_message,
+                "structured": {"blocks": self._to_structured_blocks(final_message)},
+            }
+        except Exception as e:
+            logger.exception("chat stream failed")
+            yield {"error": f"Sorry, I ran into an error: {str(e)}"}
+
+    def _build_synthesizer_prompt(self, state: TravelChatState) -> str:
+        payload = {
+            "user_goal": state.get("user_content", ""),
+            "planning_summary": state.get("planning_summary", ""),
+            "task_graph": state.get("task_graph", []),
+            "task_outputs": state.get("task_outputs", {}),
+            "execution_trace": state.get("execution_trace", []),
+        }
+        return (
+            "Generate the final travel answer using completed tasks.\n"
+            "Use task outputs as source-of-truth. Mention uncertainty if any task has ERROR.\n"
+            "If itinerary requested, format with day headings and concise bullets.\n\n"
+            f"{json.dumps(payload, indent=2)}"
+        )
+
+    def _stream_direct_answer(
+        self,
+        model: str,
+        prompt: str,
+        state: TravelChatState,
+        config: Optional[types.GenerateContentConfig] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        chunks: List[str] = []
+        for delta in self._iter_model_text(model=model, contents=prompt, config=config):
+            chunks.append(delta)
+            yield {"delta": delta}
+
+        streamed_message = "".join(chunks).strip()
+        final_state = self._node_postprocess({**state, "result": streamed_message, "all_tasks_completed": True})
+        final_message = final_state.get("result", "")
+        if final_message.startswith(streamed_message):
+            tail = final_message[len(streamed_message) :]
+            if tail:
+                yield {"delta": tail}
+        yield {
+            "done": True,
+            "message": final_message,
+            "structured": {"blocks": self._to_structured_blocks(final_message)},
+        }
+
+    def _iter_model_text(
+        self,
+        model: str,
+        contents: str,
+        config: Optional[types.GenerateContentConfig] = None,
+    ) -> Iterator[str]:
+        kwargs: Dict[str, Any] = {"model": model, "contents": contents}
+        if config is not None:
+            kwargs["config"] = config
+        try:
+            stream = self.client.models.generate_content_stream(**kwargs)
+            for chunk in stream:
+                text = getattr(chunk, "text", "") or ""
+                if text:
+                    yield text
+            return
+        except Exception as e:
+            self._log("stream fallback | error=%s", str(e))
+
+        response = self.client.models.generate_content(**kwargs)
+        text = (getattr(response, "text", "") or "").strip()
+        if text:
+            yield text
 
     def _to_structured_blocks(self, message: str) -> List[Dict[str, Any]]:
         text = (message or "").strip()

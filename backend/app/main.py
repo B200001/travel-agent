@@ -1,118 +1,163 @@
-# backend/app/main.py
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pathlib import Path
-import asyncio
-import json
+# ============================================================================
+# IMPORTS - Bringing in code from other libraries and files
+# ============================================================================
 
+# contextlib provides utilities for working with context managers (setup/cleanup)
+from contextlib import asynccontextmanager
+
+# FastAPI is the web framework - handles HTTP requests/responses
+from fastapi import FastAPI
+
+# CORS middleware allows browsers to make requests from different domains
+from fastapi.middleware.cors import CORSMiddleware
+
+# Path helps work with file/folder paths in a cross-platform way
+from pathlib import Path
+
+# dotenv loads environment variables from a .env file (API keys, secrets, etc.)
 from dotenv import load_dotenv
+
+# os provides access to environment variables and operating system features
 import os
 
-from app.schemas import TripRequest, TravelChatRequest
-from app.complete_travel_agent_hinglish import CompleteTravelAgent
-from app.travel_chat_agent import TravelChatAgent
+# Import route handlers (endpoints) for chat functionality
+from app.routes.chat import router as chat_router
 
-# Load .env from backend/ (parent of app/)
+# Import route handlers for system endpoints (health checks, etc.)
+from app.routes.system import router as system_router
+
+# Import functions to set up and tear down the chat agent
+from app.services.chat_service import initialize_chat_agent, shutdown_chat_agent
+
+
+# ============================================================================
+# ENVIRONMENT SETUP - Load configuration from .env file
+# ============================================================================
+
+# Load environment variables from .env file
+# __file__ = current file path (main.py)
+# .resolve() = convert to absolute path
+# .parent.parent = go up 2 directories (from app/main.py to backend/)
+# / ".env" = append .env filename
+# This finds the .env file in the backend/ directory
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-agent = None
-chat_agent = None
 
+# ============================================================================
+# LIFESPAN MANAGER - Code that runs when the app starts and stops
+# ============================================================================
 
-@asynccontextmanager
+@asynccontextmanager  # Decorator that makes this function a context manager
 async def lifespan(app: FastAPI):
-    global agent, chat_agent
-    # One Gemini key for both trip planner and chat
-    api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY required in .env")
-    agent = CompleteTravelAgent(api_key)
-    try:
-        chat_agent = TravelChatAgent(api_key=api_key)
-    except ValueError:
-        chat_agent = None  # fallback if something else goes wrong
+    """Manages startup and shutdown of the application.
+    
+    This function runs:
+    - BEFORE the app starts accepting requests (code before 'yield')
+    - AFTER the app stops (code after 'yield')
+    
+    Think of it like:
+        try:
+            # Startup code here
+            yield  # App runs here
+        finally:
+            # Shutdown code here
+    
+    Args:
+        app: The FastAPI application instance
+    """
+    # STARTUP: Initialize the chat agent (load models, connect to database, etc.)
+    # This happens once when the server starts
+    initialize_chat_agent()
+    
+    # YIELD: The app runs here and handles requests
+    # Everything between startup and shutdown happens at this point
     yield
-    if chat_agent is not None:
-        chat_agent.close()
+    
+    # SHUTDOWN: Clean up resources (close database connections, etc.)
+    # This happens when the server is shutting down (Ctrl+C or deployment stops)
+    shutdown_chat_agent()
 
 
-app = FastAPI(title="Travel Agent API", version="1.0", lifespan=lifespan)
+# ============================================================================
+# CREATE THE FASTAPI APPLICATION
+# ============================================================================
 
-# CORS - allow localhost and production frontend (set CORS_ORIGINS in production)
+# Create the main FastAPI application instance
+app = FastAPI(
+    title="Travel Chat API",      # Shows up in auto-generated documentation
+    version="1.0",                 # API version number
+    lifespan=lifespan              # Use our startup/shutdown manager
+)
+
+
+# ============================================================================
+# CORS CONFIGURATION - Allow web browsers to access this API
+# ============================================================================
+
+# CORS (Cross-Origin Resource Sharing) allows browsers to make requests
+# from one domain (e.g., localhost:3000) to another (e.g., localhost:8000)
+# Without CORS, browsers block these "cross-origin" requests for security
+
+# Get allowed origins from environment variable, default to localhost:3000
+# Example: CORS_ORIGINS="http://localhost:3000,https://myapp.com"
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").strip().split(",")
+
+# Clean up the list: remove whitespace and empty strings
+# Input:  ["http://localhost:3000 ", " ", "https://myapp.com"]
+# Output: ["http://localhost:3000", "https://myapp.com"]
 _origins_list = [o.strip() for o in _cors_origins if o.strip()]
-# Allow any *.vercel.app so production and preview deploys work without exact URL
+
+# Add CORS middleware to the app
+# Middleware = code that runs on every request/response
 app.add_middleware(
-    CORSMiddleware,
+    CORSMiddleware,  # The CORS handler from FastAPI
+    
+    # allow_origins: List of exact URLs that can access this API
+    # Example: ["http://localhost:3000", "https://myapp.com"]
     allow_origins=_origins_list,
+    
+    # allow_origin_regex: Pattern to match URLs dynamically
+    # r"https://.*\.vercel\.app" matches:
+    #   - https://myapp.vercel.app
+    #   - https://myapp-preview-abc123.vercel.app
+    #   - Any subdomain of vercel.app
+    # This is useful for preview deployments that have random URLs
     allow_origin_regex=r"https://.*\.vercel\.app",
+    
+    # allow_methods: Which HTTP methods are allowed
+    # GET = fetch data, POST = send data, OPTIONS = browser preflight check
     allow_methods=["GET", "POST", "OPTIONS"],
+    
+    # allow_headers: Which request headers the browser can send
+    # "*" means all headers are allowed (Authorization, Content-Type, etc.)
     allow_headers=["*"],
+    
+    # expose_headers: Which response headers the browser can read
+    # "*" means the browser can access all response headers
     expose_headers=["*"],
 )
 
-@app.get("/")
-def home():
-    return {"message": "Welcome to the Travel Agent API"}
 
-@app.post("/api/plan-trip")
-async def plan_trip(request: TripRequest):
-    try:
-        trip_data = request.model_dump()
-        result = agent.plan_trip(trip_data)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ============================================================================
+# REGISTER ROUTES - Connect URL endpoints to handler functions
+# ============================================================================
 
-@app.post("/api/travel-chat")
-async def travel_chat(request: TravelChatRequest):
-    if chat_agent is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Travel chat requires GEMINI_API_KEY or GOOGLE_API_KEY in .env"
-        )
-    try:
-        messages = [m.model_dump() for m in request.messages]
-        payload = chat_agent.chat_payload(messages, session_id=request.session_id)
-        return payload
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Include the system router (endpoints like /health, /status, etc.)
+# All routes in system_router become available at their defined paths
+app.include_router(system_router)
+
+# Include the chat router (endpoints like /chat, /history, etc.)
+# All routes in chat_router become available at their defined paths
+app.include_router(chat_router)
 
 
-@app.post("/api/travel-chat/stream")
-async def travel_chat_stream(request: TravelChatRequest):
-    if chat_agent is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Travel chat requires GEMINI_API_KEY or GOOGLE_API_KEY in .env"
-        )
+# ============================================================================
+# HOW THIS ALL WORKS TOGETHER
+# ============================================================================
 
-    async def event_generator():
-        try:
-            messages = [m.model_dump() for m in request.messages]
-            payload = chat_agent.chat_payload(messages, session_id=request.session_id)
-            response = payload["message"]
-            words = response.split()
-            for i, word in enumerate(words):
-                chunk = (word + " ") if i < len(words) - 1 else word
-                yield f"data: {json.dumps({'delta': chunk})}\n\n"
-                await asyncio.sleep(0.02)
-            yield f"data: {json.dumps({'done': True, 'message': response, 'structured': payload.get('structured')})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
-
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok"}
+# 1. Server starts → lifespan() runs → initialize_chat_agent() sets up resources
+# 2. App is ready to receive requests
+# 3. Browser at localhost:3000 sends POST to localhost:8000/chat
+# 4. CORS middleware checks if localhost:3000 is allowed → Yes → allows request
+# 5. FastAPI routes request to chat_router → handler processes it → returns response
+# 6. Server stops (Ctrl+C) → lifespan() cleanup → shutdown_chat_agent() closes resources

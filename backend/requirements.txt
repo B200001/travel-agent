@@ -2,10 +2,11 @@ fastapi>=0.109.0
 google-genai>=1.0.0
 uvicorn[standard]>=0.27.0
 python-dotenv>=1.0.0
-langgraph
-langgraph-checkpoint-sqlite
-langchain-core
-pydantic>=2.0
-# Optional: for travel_chat_agent observability and guardrails
-langfuse>=3.0.0
+langgraph>=1.1.3
+langgraph-checkpoint-sqlite>=2.0.0
+langchain-core>=0.3.0
+pydantic>=2.7.4
+pytest>=8.0.0
+# Optional: travel chat observability and guardrails
+langfuse>=4.0.1
 guardrails-ai>=0.9.0

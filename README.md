@@ -1,11 +1,10 @@
 # Travel Agent
 
-A full-stack travel planning application with an AI-powered chat assistant and a detailed trip planner. The chat uses natural conversation to suggest destinations, itineraries, and travel tips; the plan form generates day-by-day itineraries, hotels, transport, and budget breakdowns.
+A full-stack travel chatbot application with an AI-powered assistant for destinations, itineraries, budgets, and practical travel tips.
 
 ## Features
 
 - **Chat interface** — Conversational travel assistant (Gemini) for destination ideas, budgets, and recommendations
-- **Plan Trip form** — Structured trip planner with flights, hotels, local transport, restaurants, sightseeing, weather, packing list, and budget breakdown
 - **Modern stack** — Next.js frontend, FastAPI backend, LangGraph for orchestration
 
 ## Tech Stack
@@ -15,18 +14,18 @@ A full-stack travel planning application with an AI-powered chat assistant and a
 | Frontend   | Next.js 14, React, Tailwind CSS |
 | Backend    | FastAPI, Python 3.9+          |
 | AI / Chat  | Google Gemini (google-genai)   |
-| Trip plan  | LangGraph, Claude/Gemini       |
+| Orchestration | LangGraph                    |
 
 ## Project Structure
 
 ```
-├── frontend/          # Next.js app (Chat + Plan Trip UI)
-├── backend/           # FastAPI app (travel-chat + plan-trip APIs)
+├── frontend/          # Next.js app (travel chat UI)
+├── backend/           # FastAPI app (travel-chat APIs)
 │   ├── app/
 │   │   ├── main.py
-│   │   ├── travel_chat_agent.py
-│   │   ├── complete_travel_agent_hinglish.py
-│   │   └── schemas.py
+│   │   ├── routes/
+│   │   ├── services/
+│   │   └── storage/
 │   ├── requirements.txt
 │   └── .env           # Not committed; see Environment below
 ├── render.yaml        # Optional: Render.com backend config
@@ -87,7 +86,7 @@ See the dashboard docs for each platform for exact steps. The repo includes a `r
 
 | Variable | Where | Description |
 |----------|--------|-------------|
-| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Backend | Required for chat and trip planning. |
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Backend | Required for travel chat. |
 | `GOOGLE_GENAI_USE_VERTEXAI` | Backend | Set to `False` for Gemini API; `True` for Vertex AI. |
 | `CORS_ORIGINS` | Backend | Comma-separated allowed origins (e.g. your Vercel URL). |
 | `NEXT_PUBLIC_API_URL` | Frontend | Backend base URL (e.g. `https://your-api.onrender.com`). |

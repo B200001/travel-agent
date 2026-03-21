@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 from google.genai import types
 
-from .storage import load_long_term_memory, save_long_term_memory
+from ..storage.memory import load_long_term_memory, save_long_term_memory
 
 
 def build_tool_declarations() -> List[types.FunctionDeclaration]:
