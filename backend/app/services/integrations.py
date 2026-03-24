@@ -16,6 +16,16 @@ try:
 except ImportError:
     pass
 
+GOOGLE_GENAI_INSTRUMENTOR_AVAILABLE = False
+try:
+    from openinference.instrumentation.google_genai import GoogleGenAIInstrumentor
+
+    GOOGLE_GENAI_INSTRUMENTOR_AVAILABLE = True
+except ImportError:
+    pass
+
+_GEMINI_INSTRUMENTED = False
+
 LANGFUSE_PROPAGATION_AVAILABLE = False
 try:
     from langfuse import propagate_attributes as langfuse_propagate_attributes
@@ -47,20 +57,63 @@ def setup_guard() -> Any:
 
 def setup_langfuse() -> Any:
     """Create and return langfuse client if configured."""
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
     secret_key = os.getenv("LANGFUSE_SECRET_KEY")
-    if not secret_key:
+    if not (public_key and secret_key):
         return None
     if not LANGFUSE_AVAILABLE:
         logger.warning("Langfuse SDK not installed; run `pip install langfuse`.")
         return None
-    # Backward-compatible alias: many guides use BASE_URL, SDK uses HOST.
+    # Keep BASE_URL and HOST aliases in sync for SDK/version compatibility.
     if not os.getenv("LANGFUSE_HOST") and os.getenv("LANGFUSE_BASE_URL"):
         os.environ["LANGFUSE_HOST"] = os.getenv("LANGFUSE_BASE_URL", "")
+    if not os.getenv("LANGFUSE_BASE_URL") and os.getenv("LANGFUSE_HOST"):
+        os.environ["LANGFUSE_BASE_URL"] = os.getenv("LANGFUSE_HOST", "")
     try:
         return get_langfuse_client()
     except Exception as e:
         logger.warning("Langfuse init failed: %s", e)
         return None
+
+
+def setup_langfuse_gemini_instrumentation(langfuse_client: Any) -> bool:
+    """Enable Gemini auto-instrumentation when Langfuse is configured.
+
+    This is optional and idempotent:
+    - No-op when Langfuse is disabled.
+    - No-op when OpenInference dependency is not installed.
+    - No-op if already instrumented in this process.
+    """
+    global _GEMINI_INSTRUMENTED
+
+    if not langfuse_client:
+        return False
+    if _GEMINI_INSTRUMENTED:
+        return True
+
+    enabled = os.getenv("LANGFUSE_GEMINI_AUTO_INSTRUMENT", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+    if not enabled:
+        return False
+
+    if not GOOGLE_GENAI_INSTRUMENTOR_AVAILABLE:
+        logger.info(
+            "Gemini auto-instrumentation skipped: install "
+            "`openinference-instrumentation-google-genai` to enable."
+        )
+        return False
+
+    try:
+        GoogleGenAIInstrumentor().instrument()
+        _GEMINI_INSTRUMENTED = True
+        logger.info("Gemini auto-instrumentation enabled for Langfuse.")
+        return True
+    except Exception as e:
+        logger.warning("Gemini auto-instrumentation failed: %s", e)
+        return False
 
 
 def run_guardrails(guard: Any, text: str, stage: str = "input") -> str:
@@ -81,15 +134,29 @@ def normalize_langfuse_session_id(session_id: Any) -> str:
     if not text:
         text = "default"
     ascii_text = text.encode("ascii", errors="ignore").decode("ascii").strip()
+    if not ascii_text:
+        ascii_text = "default"
     return ascii_text[:200]
 
 
-def langfuse_session_scope(session_id: Any) -> Any:
-    """Context manager to propagate Langfuse session_id across observations."""
+def langfuse_session_scope(session_id: Any, langfuse_client: Any = None) -> Any:
+    """Context manager to propagate Langfuse session_id across observations.
+
+    Supports both:
+    - top-level `from langfuse import propagate_attributes`
+    - client-scoped `langfuse_client.propagate_attributes(...)`
+    """
     safe_session_id = normalize_langfuse_session_id(session_id)
-    if not (LANGFUSE_PROPAGATION_AVAILABLE and safe_session_id):
+    if not safe_session_id:
         return nullcontext()
-    return langfuse_propagate_attributes(session_id=safe_session_id)
+    if LANGFUSE_PROPAGATION_AVAILABLE:
+        return langfuse_propagate_attributes(session_id=safe_session_id)
+    if langfuse_client and hasattr(langfuse_client, "propagate_attributes"):
+        try:
+            return langfuse_client.propagate_attributes(session_id=safe_session_id)
+        except Exception:
+            return nullcontext()
+    return nullcontext()
 
 
 def _conversation_as_text(conversation: Optional[List[Dict[str, str]]]) -> str:

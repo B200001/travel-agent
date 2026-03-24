@@ -57,6 +57,14 @@ GEMINI_API_KEY=your-gemini-api-key
 # or GOOGLE_API_KEY=your-google-api-key
 GOOGLE_GENAI_USE_VERTEXAI=False
 CORS_ORIGINS=http://localhost:3000
+
+# Optional: Langfuse tracing (recommended)
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+# EU cloud:
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+# US cloud example:
+# LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
 ```
 
 Run the API:
@@ -89,7 +97,29 @@ See the dashboard docs for each platform for exact steps. The repo includes a `r
 | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Backend | Required for travel chat. |
 | `GOOGLE_GENAI_USE_VERTEXAI` | Backend | Set to `False` for Gemini API; `True` for Vertex AI. |
 | `CORS_ORIGINS` | Backend | Comma-separated allowed origins (e.g. your Vercel URL). |
+| `LANGFUSE_PUBLIC_KEY` | Backend | Optional. Enables Langfuse tracing when paired with secret key. |
+| `LANGFUSE_SECRET_KEY` | Backend | Optional. Enables Langfuse tracing when paired with public key. |
+| `LANGFUSE_BASE_URL` | Backend | Optional. Langfuse host (`https://cloud.langfuse.com` or `https://us.cloud.langfuse.com`). |
 | `NEXT_PUBLIC_API_URL` | Frontend | Backend base URL (e.g. `https://your-api.onrender.com`). |
+
+## Langfuse Sessions
+
+This backend already propagates `session_id` to Langfuse so you can replay conversations in the Sessions view.
+
+- Send `session_id` in each request to `/api/travel-chat` or `/api/travel-chat/stream`
+- Reuse the same `session_id` for all turns in one chat thread
+- Use a US-ASCII value under 200 chars (Langfuse requirement)
+
+Example request body:
+
+```json
+{
+  "messages": [
+    { "role": "user", "content": "Plan a 3-day Rome trip with food spots" }
+  ],
+  "session_id": "chat-user-42-thread-1"
+}
+```
 
 ## Travel Chat Graph
 

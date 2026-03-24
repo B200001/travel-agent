@@ -9,4 +9,5 @@ pydantic>=2.7.4
 pytest>=8.0.0
 # Optional: travel chat observability and guardrails
 langfuse>=4.0.1
+openinference-instrumentation-google-genai
 guardrails-ai>=0.9.0

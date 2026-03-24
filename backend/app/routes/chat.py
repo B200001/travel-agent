@@ -13,6 +13,7 @@ to interact with the travel chat system. It has two endpoints:
 # __future__ annotations allow using modern type hints in older Python versions
 from __future__ import annotations
 
+import asyncio
 # json library for converting Python objects to JSON strings
 import json
 
@@ -158,6 +159,8 @@ async def travel_chat_stream(request: TravelChatRequest):
                 #
                 # Example output: data: {"type": "chunk", "content": "Hello"}\n\n
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                # Yield control so Uvicorn/ASGI can flush each chunk promptly.
+                await asyncio.sleep(0)
                 
         except ValueError as exc:
             # If there's a configuration error, send it as an error event
@@ -178,12 +181,13 @@ async def travel_chat_stream(request: TravelChatRequest):
         event_generator(),           # The generator function we defined above
         media_type="text/event-stream",  # SSE MIME type (tells browser how to parse)
         headers={
-            # Cache-Control: no-cache - Don't cache this response (it's unique each time)
-            "Cache-Control": "no-cache",
+            # no-transform + X-Accel-Buffering help prevent intermediate buffering.
+            "Cache-Control": "no-cache, no-transform",
             
             # Connection: keep-alive - Keep the HTTP connection open for streaming
             # Without this, the connection might close after the first chunk
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
 

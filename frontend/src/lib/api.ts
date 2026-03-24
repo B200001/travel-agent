@@ -68,12 +68,13 @@ export async function streamTravelChat(
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
+    // Support both LF and CRLF event delimiters for SSE compatibility.
+    const events = buffer.split(/\r?\n\r?\n/);
     buffer = events.pop() || "";
 
     for (const event of events) {
       const line = event
-        .split("\n")
+        .split(/\r?\n/)
         .find((l) => l.startsWith("data: "));
       if (!line) continue;
       const payload = line.slice(6);

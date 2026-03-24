@@ -17,6 +17,15 @@ Common uses:
 
 # APIRouter: Groups related endpoints together (similar to what we saw in chat.py)
 from fastapi import APIRouter
+from fastapi import Query
+
+from app.services.integrations import (
+    LANGFUSE_AVAILABLE,
+    LANGFUSE_PROPAGATION_AVAILABLE,
+    langfuse_session_scope,
+    normalize_langfuse_session_id,
+    setup_langfuse,
+)
 
 
 # ============================================================================
@@ -135,6 +144,79 @@ async def health():
     # Return a simple status dictionary
     # In production, you might check database connectivity, etc.
     return {"status": "ok"}
+
+
+@router.get("/api/system/langfuse")
+async def langfuse_debug(
+    session_id: str = Query(default="debug-session"),
+    create_trace: bool = Query(default=True),
+):
+    """Return Langfuse diagnostics and optional test trace metadata.
+
+    Use this endpoint to quickly verify:
+    - Langfuse SDK availability
+    - client authentication status
+    - normalized session id used for tracing
+    - trace id generated under that session id
+    """
+    normalized_session_id = normalize_langfuse_session_id(session_id)
+    langfuse = setup_langfuse()
+
+    response = {
+        "enabled": bool(langfuse),
+        "sdk_available": LANGFUSE_AVAILABLE,
+        "propagation_available": LANGFUSE_PROPAGATION_AVAILABLE,
+        "propagation_via_client": bool(langfuse and hasattr(langfuse, "propagate_attributes")),
+        "requested_session_id": session_id,
+        "normalized_session_id": normalized_session_id,
+        "create_trace_requested": create_trace,
+        "auth_ok": None,
+        "trace_id": None,
+        "error": None,
+    }
+
+    if not langfuse:
+        return response
+
+    try:
+        response["auth_ok"] = bool(langfuse.auth_check())
+    except Exception as exc:
+        response["auth_ok"] = False
+        response["error"] = f"auth_check failed: {exc}"
+
+    if not create_trace:
+        return response
+
+    try:
+        with langfuse_session_scope(normalized_session_id, langfuse):
+            try:
+                observation_ctx = langfuse.start_as_current_observation(
+                    trace_context={"session_id": normalized_session_id},
+                    as_type="span",
+                    name="langfuse-session-debug",
+                    input={"session_id": normalized_session_id},
+                    output={"status": "ok"},
+                )
+            except TypeError:
+                observation_ctx = langfuse.start_as_current_observation(
+                    as_type="span",
+                    name="langfuse-session-debug",
+                    input={"session_id": normalized_session_id},
+                    output={"status": "ok"},
+                )
+
+            with observation_ctx as span:
+                try:
+                    if hasattr(span, "update_trace"):
+                        span.update_trace(session_id=normalized_session_id)
+                except Exception:
+                    pass
+                response["trace_id"] = getattr(span, "trace_id", None) or getattr(span, "id", None)
+        langfuse.flush()
+    except Exception as exc:
+        response["error"] = f"trace creation failed: {exc}"
+
+    return response
 
 
 # ============================================================================

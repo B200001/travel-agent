@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 
 # os provides access to environment variables and operating system features
 import os
+import logging
+from logging.handlers import RotatingFileHandler
 
 # Import route handlers (endpoints) for chat functionality
 from app.routes.chat import router as chat_router
@@ -41,6 +43,38 @@ from app.services.chat_service import initialize_chat_agent, shutdown_chat_agent
 # / ".env" = append .env filename
 # This finds the .env file in the backend/ directory
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+# ============================================================================
+# LOGGING SETUP - Write application logs to a rotating file
+# ============================================================================
+def configure_logging() -> None:
+    """Configure app + server logging to write into a file."""
+    log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = getattr(logging, log_level_name, logging.INFO)
+
+    default_log_file = Path(__file__).resolve().parent.parent / "logs" / "app.log"
+    log_file = Path(os.getenv("LOG_FILE_PATH", str(default_log_file)))
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(formatter)
+    setattr(file_handler, "_app_file_handler", True)
+
+    # Attach file handler to root and uvicorn access logger.
+    # Root captures most application/server logs without duplication.
+    for logger_name in ("", "uvicorn.access"):
+        target_logger = logging.getLogger(logger_name)
+        target_logger.setLevel(log_level)
+        if not any(getattr(h, "_app_file_handler", False) for h in target_logger.handlers):
+            target_logger.addHandler(file_handler)
+
+configure_logging()
 
 
 # ============================================================================
